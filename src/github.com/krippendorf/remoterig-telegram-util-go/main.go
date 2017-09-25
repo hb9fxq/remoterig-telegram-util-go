@@ -20,6 +20,7 @@ import (
 	"image"
 	"bytes"
 	"image/jpeg"
+	"io"
 )
 
 type AppContext struct {
@@ -168,6 +169,29 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 
 	if (update.Message.Chat.ID != context.TelegramChat) {
 		return // only process messages from configured chat
+	}
+
+	if (strings.HasPrefix(update.Message.Text, "/flashes")) {
+
+		url := "http://images.blitzortung.org/Images/image_b_eu.png"
+
+		response, e := http.Get(url)
+		if e != nil {
+			log.Fatal(e)
+			return
+		}
+
+		defer response.Body.Close()
+
+
+		buf := new(bytes.Buffer)
+		io.Copy(buf, response.Body)
+		b := tgbotapi.FileBytes{Name: "flashes.png", Bytes: buf.Bytes()}
+
+		msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
+		msgImage.ReplyToMessageID = update.Message.MessageID
+		msgImage.Caption = fmt.Sprintf("Uuhhhh, Let's hope, that all flashes hit other antennas. Go check further details here: https://www.lightningmaps.org/blitzortung/europe/index.php?lang=en")
+		context.TelegramBot.Send(msgImage)
 	}
 
 	if (strings.HasPrefix(update.Message.Text, "/flexstatus")) {
