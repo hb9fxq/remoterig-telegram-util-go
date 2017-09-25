@@ -14,6 +14,12 @@ import (
 	"github.com/krippendorf/flex6k-discovery-util-go/src/github.com/krippendorf/flex6k-discovery-util-go/flex" /* hmmm..... ok*/
 	"github.com/streadway/amqp"
 	"encoding/json"
+	"github.com/llgcode/draw2d/draw2dimg"
+	"image/color"
+	"math"
+	"image"
+	"bytes"
+	"image/jpeg"
 )
 
 type AppContext struct {
@@ -179,9 +185,21 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 
 	if (strings.HasPrefix(update.Message.Text, "/rotorstatus")) {
 		stateDegree := getRotatorStatus(context)
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Rotator is currently at %d°\n", stateDegree))
-		msg.ReplyToMessageID = update.Message.MessageID
-		context.TelegramBot.Send(msg)
+
+		if(stateDegree >=0 && stateDegree<360){
+			buf := new(bytes.Buffer)
+			jpeg.Encode(buf, draw(stateDegree, -1), nil)
+			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
+
+			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
+			msgImage.ReplyToMessageID = update.Message.MessageID
+			msgImage.Caption = fmt.Sprintf("Rotator is currently at %d°\n", stateDegree)
+			context.TelegramBot.Send(msgImage)
+		}else{
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Rotator is currently at %d°\n", stateDegree))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+		}
 	}
 
 	if (strings.HasPrefix(update.Message.Text, "/setrotor")) {
@@ -212,9 +230,21 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 		}
 
 		stateDegree := getRotatorStatus(context)
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Please wait, rotating from %d° to %d°\n", stateDegree, stateInt))
-		msg.ReplyToMessageID = update.Message.MessageID
-		context.TelegramBot.Send(msg)
+
+		if(stateDegree >=0 && stateDegree<360){
+			buf := new(bytes.Buffer)
+			jpeg.Encode(buf, draw(stateDegree, stateInt), nil)
+			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
+
+			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
+			msgImage.ReplyToMessageID = update.Message.MessageID
+			msgImage.Caption = fmt.Sprintf("Please wait, rotating from %d° to %d°\n", stateDegree, stateInt)
+			context.TelegramBot.Send(msgImage)
+		}else{
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Please wait, rotating from %d° to %d°\n", stateDegree, stateInt))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+		}
 
 		go rotateAndNotify(update, context, stateInt)
 	}
@@ -237,9 +267,17 @@ func rotateAndNotify(update *tgbotapi.Update, context *AppContext, i int) {
 		}
 
 		if(getRotatorStatus(context) == i){
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Rotation done, we're now looking at %d°\n", i))
-			msg.ReplyToMessageID = update.Message.MessageID
-			context.TelegramBot.Send(msg)
+
+
+			buf := new(bytes.Buffer)
+			jpeg.Encode(buf, draw(i, -1), nil)
+			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
+
+			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
+			msgImage.ReplyToMessageID = update.Message.MessageID
+			msgImage.Caption = fmt.Sprintf("Rotation done, we're now looking at %d°\n", i)
+			context.TelegramBot.Send(msgImage)
+
 			context.rotationInProgress = false;
 			return
 		}
@@ -300,4 +338,32 @@ func getRotatorStatus(context *AppContext) (deg int) {
 	}
 
 	return
+}
+
+func draw(from int, to int) *image.RGBA{
+
+	dest := image.NewRGBA(image.Rect(0, 0, 600, 600))
+	source, _ := draw2dimg.LoadFromPngFile("/flexi/locator.png")
+	gc := draw2dimg.NewGraphicContext(dest)
+	gc.DrawImage(source)
+
+	addLine(gc,5, color.NRGBA{0x33, 255, 0x33, 0x80}, float64(from))
+
+	if(to>=0){
+		addLine(gc,5, color.NRGBA{255, 0x33, 0x33, 0x80}, float64(to))
+	}
+
+	gc.Restore()
+	return dest
+}
+
+func addLine(gc *draw2dimg.GraphicContext, i int, nrgba color.NRGBA, target float64) {
+	targetAngle := (-90 + target) * (math.Pi / 180.0)
+	gc.SetFillColor(nrgba)
+	gc.SetStrokeColor(nrgba)
+	gc.SetLineWidth(15)
+
+	gc.MoveTo(300+math.Cos(targetAngle)*280.0, 300+math.Sin(targetAngle)*280.0)
+	gc.LineTo(300, 300)
+	gc.Stroke()
 }
