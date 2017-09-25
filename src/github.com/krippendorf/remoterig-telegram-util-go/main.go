@@ -222,8 +222,8 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 			return
 		}
 
-		if(err != nil || stateInt >360 || stateInt<1){
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("That is an invalid command. Range must be in 0-360°"))
+		if(err != nil || stateInt >=360 || stateInt<=-1){
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("That is an invalid command. Range must be in 0° - 359°"))
 			msg.ReplyToMessageID = update.Message.MessageID
 			context.TelegramBot.Send(msg)
 			return
@@ -231,7 +231,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 
 		stateDegree := getRotatorStatus(context)
 
-		if(stateDegree >=0 && stateDegree<360){
+		if(stateDegree >=0 && stateDegree<=360){
 			buf := new(bytes.Buffer)
 			jpeg.Encode(buf, draw(stateDegree, stateInt), nil)
 			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
