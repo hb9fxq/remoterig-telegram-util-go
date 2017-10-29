@@ -28,10 +28,12 @@ type AppContext struct {
 	TelegramChat  int64
 	TelegramBot   *tgbotapi.BotAPI
 	Rotor1216IP   string
+	Webswitch1216IP   string
 	discoveryPackage flex.DiscoveryPackage
 	rotationInProgress bool
 	rabbitConnStr string
 	lastFlexStatus time.Time
+	lastFlexStateString string
 	sync.Mutex
 }
 
@@ -52,8 +54,11 @@ func main() {
 	flag.StringVar(&context.TelegramToken, "TOKEN", NDEF_STRING, "Telegram BOT API Token")
 	flag.StringVar(&chatIdString, "CHAT", NDEF_STRING, "Telegram ChatID")
 	flag.StringVar(&context.Rotor1216IP, "ROTOR1216", NDEF_STRING, "IP address of the 1216H Rotor Controller")
+	flag.StringVar(&context.Webswitch1216IP, "WEBSWITCH1216", NDEF_STRING, "IP address of the 1216H Switch")
 	flag.StringVar(&context.rabbitConnStr, "RABBITCONN", NDEF_STRING, "Rabbitmq connection string")
 	flag.Parse()
+
+	context.lastFlexStateString = "Available"
 
 	if(len(context.rabbitConnStr)>0){
 		go consumeFlexRabbit(context)
@@ -152,11 +157,37 @@ func consumeFlexRabbit(context *AppContext) {
 			context.lastFlexStatus =  time.Now()
 		    dec := json.NewDecoder(strings.NewReader(string(d.Body[:])))
 			dec.Decode(&context.discoveryPackage)
+
+			if context.lastFlexStateString != strings.ToUpper(context.discoveryPackage.Status) {
+				context.lastFlexStateString = strings.ToUpper(context.discoveryPackage.Status)
+				handleFlexStateChange(context)
+			}
+
 		}
 	}()
 
 	<-forever
 }
+
+func handleFlexStateChange(context *AppContext){
+	time.Sleep(time.Second * 3)
+
+	if strings.Contains(context.lastFlexStateString, "USE") {
+
+		go getHttpString("http://"+context.Webswitch1216IP+"/relaycontrol/off/1")
+
+		msg := tgbotapi.NewMessage(context.TelegramChat, "Public KIWIsdr switched off, Antenna is connected to Flexradio!")
+		context.TelegramBot.Send(msg)
+
+
+	} else {
+		go getHttpString("http://"+context.Webswitch1216IP+"/relaycontrol/on/1")
+		msg := tgbotapi.NewMessage(context.TelegramChat, "Public KIWIsdr switched on, Antenna is disconnected from Flexradio!")
+		context.TelegramBot.Send(msg)
+
+	}
+}
+
 
 func failOnError(err error, msg string) {
 	if err != nil {
@@ -226,11 +257,11 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 		}
 	}
 
-	if (strings.HasPrefix(update.Message.Text, "/setrotor")) {
+	if strings.HasPrefix(update.Message.Text, "/setrotor") {
 
 		tokens := strings.Split(update.Message.Text, " ")
 
-		if(len(tokens) != 2){
+		if len(tokens) != 2 {
 			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("That is an invalid command"))
 			msg.ReplyToMessageID = update.Message.MessageID
 			context.TelegramBot.Send(msg)
@@ -239,7 +270,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 
 		stateInt, err := strconv.Atoi(tokens[1])
 
-		if(context.rotationInProgress){
+		if context.rotationInProgress {
 			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Hey, wait my friend. Rotation is in progress!"))
 			msg.ReplyToMessageID = update.Message.MessageID
 			context.TelegramBot.Send(msg)
