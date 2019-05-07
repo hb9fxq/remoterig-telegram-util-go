@@ -1,6 +1,6 @@
 #!/bin/bash
 PATH="/usr/local/go/bin:$PATH"
-export GOPATH=$(pwd):~/GOPATH
+export GOPATH=$(pwd):~/go
 
 rm -rf bin/*
 
