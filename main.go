@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
-	"github.com/krippendorf/flex6k-discovery-util-go/src/github.com/krippendorf/flex6k-discovery-util-go/flex" /* hmmm..... ok*/
+	"github.com/krippendorf/flex6k-discovery-util-go/flex"
 	"github.com/llgcode/draw2d/draw2dimg"
 	"github.com/streadway/amqp"
 	"image"
