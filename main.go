@@ -174,13 +174,13 @@ func handleFlexStateChange(context *AppContext) {
 
 	if len(context.lastFlexStateString) > 1 {
 
-		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/off/1")
+		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/on/1")
 
 		msg := tgbotapi.NewMessage(context.TelegramChat, "FLEX V3 ACTIVE (Kiwi disabled) current IP(s) connected: "+context.lastFlexStateString)
 		context.TelegramBot.Send(msg)
 
 	} else {
-		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/on/1")
+		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/off/1")
 		msg := tgbotapi.NewMessage(context.TelegramChat, "PUBLIC KIWI IS ACTIVE, no user is connected to FLEX V3 at this moment")
 		context.TelegramBot.Send(msg)
 
