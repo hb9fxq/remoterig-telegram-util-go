@@ -24,16 +24,19 @@ import (
 )
 
 type AppContext struct {
+	AssetDir			string
 	TelegramToken       string
 	TelegramChat        int64
 	TelegramBot         *tgbotapi.BotAPI
 	Rotor1216IP         string
+	LoopRotor1216IP         string
 	Webswitch1216IP     string
 	discoveryPackage    flex.DiscoveryPackage
 	rotationInProgress  bool
 	rabbitConnStr       string
 	lastFlexStatus      time.Time
 	lastFlexStateString string
+	antrawlist	string
 	sync.Mutex
 }
 
@@ -52,10 +55,13 @@ func main() {
 	var chatIdString string
 
 	flag.StringVar(&context.TelegramToken, "TOKEN", NDEF_STRING, "Telegram BOT API Token")
+	flag.StringVar(&context.AssetDir, "ASSETDIR", NDEF_STRING, "Assets Directory")
 	flag.StringVar(&chatIdString, "CHAT", NDEF_STRING, "Telegram ChatID")
 	flag.StringVar(&context.Rotor1216IP, "ROTOR1216", NDEF_STRING, "IP address of the 1216H Rotor Controller")
+	flag.StringVar(&context.LoopRotor1216IP, "LOOPROTOR1216", NDEF_STRING, "IP address of the 1216H Rotor Controller")
 	flag.StringVar(&context.Webswitch1216IP, "WEBSWITCH1216", NDEF_STRING, "IP address of the 1216H Switch")
 	flag.StringVar(&context.rabbitConnStr, "RABBITCONN", NDEF_STRING, "Rabbitmq connection string")
+	flag.StringVar(&context.antrawlist, "ANTLIST", NDEF_STRING, "AntennaList")
 	flag.Parse()
 
 	context.lastFlexStateString = "Available"
@@ -178,11 +184,13 @@ func handleFlexStateChange(context *AppContext) {
 
 		msg := tgbotapi.NewMessage(context.TelegramChat, "FLEX V3 ACTIVE (Kiwi disabled) current IP(s) connected: "+context.lastFlexStateString)
 		context.TelegramBot.Send(msg)
+		log.Print("Switch: KIWI OFF, FLEX ON")
 
 	} else {
 		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/off/1")
 		msg := tgbotapi.NewMessage(context.TelegramChat, "PUBLIC KIWI IS ACTIVE, no user is connected to FLEX V3 at this moment")
 		context.TelegramBot.Send(msg)
+		log.Print("Switch: KIWI ON, FLEX OFF")
 
 	}
 }
@@ -236,11 +244,42 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 	}
 
 	if strings.HasPrefix(update.Message.Text, "/rotorstatus") {
-		stateDegree := getRotatorStatus(context)
+		stateDegree := getRotatorStatus(context, context.Rotor1216IP)
 
 		if stateDegree >= 0 && stateDegree < 360 {
 			buf := new(bytes.Buffer)
-			jpeg.Encode(buf, draw(stateDegree, -1), nil)
+			jpeg.Encode(buf, draw(context, "locator_opti.png",stateDegree, -1), nil)
+			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
+
+			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
+			msgImage.ReplyToMessageID = update.Message.MessageID
+			msgImage.Caption = fmt.Sprintf("Rotator is currently at %d°\n", stateDegree)
+			context.TelegramBot.Send(msgImage)
+		} else {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Rotator is currently at %d°\n", stateDegree))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+		}
+	}
+
+	if strings.HasPrefix(update.Message.Text, "/getant") {
+
+		//TODO: get connected antenna
+		antConnMessage := "\r\n\r\nConnected: 1: NotImplemented :-)"
+
+		res := strings.ReplaceAll(context.antrawlist, ";", "\r\n")
+		res += antConnMessage
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, res)
+		msg.ReplyToMessageID = update.Message.MessageID
+		context.TelegramBot.Send(msg)
+	}
+
+	if strings.HasPrefix(update.Message.Text, "/loopstatus") {
+		stateDegree := getRotatorStatus(context, context.LoopRotor1216IP)
+
+		if stateDegree >= 0 && stateDegree < 360 {
+			buf := new(bytes.Buffer)
+			jpeg.Encode(buf, draw(context, "locator_loop.png",stateDegree, -1), nil)
 			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
 
 			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
@@ -281,11 +320,11 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 			return
 		}
 
-		stateDegree := getRotatorStatus(context)
+		stateDegree := getRotatorStatus(context, context.Rotor1216IP)
 
 		if stateDegree >= 0 && stateDegree <= 360 {
 			buf := new(bytes.Buffer)
-			jpeg.Encode(buf, draw(stateDegree, stateInt), nil)
+			jpeg.Encode(buf, draw(context, "locator_opti.png", stateDegree, stateInt), nil)
 			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
 
 			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
@@ -298,13 +337,60 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 			context.TelegramBot.Send(msg)
 		}
 
-		go rotateAndNotify(update, context, stateInt)
+		go rotateAndNotify(update, context.Rotor1216IP,"locator_opti.png", context, stateInt)
+	}
+
+	if strings.HasPrefix(update.Message.Text, "/setloop") {
+
+		tokens := strings.Split(update.Message.Text, " ")
+
+		if len(tokens) != 2 {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("That is an invalid command"))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+			return
+		}
+
+		stateInt, err := strconv.Atoi(tokens[1])
+
+		if context.rotationInProgress {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Hey, wait my friend. Rotation is in progress!"))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+			return
+		}
+
+		if err != nil || stateInt >= 360 || stateInt <= -1 {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("That is an invalid command. Range must be in 0° - 359°"))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+			return
+		}
+
+		stateDegree := getRotatorStatus(context, context.LoopRotor1216IP)
+
+		if stateDegree >= 0 && stateDegree <= 360 {
+			buf := new(bytes.Buffer)
+			jpeg.Encode(buf, draw(context, "locator_loop.png", stateDegree, stateInt), nil)
+			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
+
+			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
+			msgImage.ReplyToMessageID = update.Message.MessageID
+			msgImage.Caption = fmt.Sprintf("Please wait, rotating from %d° to %d°\n", stateDegree, stateInt)
+			context.TelegramBot.Send(msgImage)
+		} else {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Please wait, rotating from %d° to %d°\n", stateDegree, stateInt))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+		}
+
+		go rotateAndNotify(update, context.LoopRotor1216IP, "locator_loop.png",context, stateInt)
 	}
 
 }
-func rotateAndNotify(update *tgbotapi.Update, context *AppContext, i int) {
+func rotateAndNotify(update *tgbotapi.Update, addressOrIp string, png string, context *AppContext, i int) {
 	context.rotationInProgress = true
-	getHttpString("http://" + context.Rotor1216IP + "/rotatorcontrol/set/" + strconv.Itoa(i))
+	getHttpString("http://" + addressOrIp + "/rotatorcontrol/set/" + strconv.Itoa(i))
 
 	seconds := 0
 
@@ -318,10 +404,10 @@ func rotateAndNotify(update *tgbotapi.Update, context *AppContext, i int) {
 			return
 		}
 
-		if getRotatorStatus(context) == i {
+		if getRotatorStatus(context, addressOrIp) == i {
 
 			buf := new(bytes.Buffer)
-			jpeg.Encode(buf, draw(i, -1), nil)
+			jpeg.Encode(buf, draw(context,png , i, -1), nil)
 			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
 
 			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
@@ -362,15 +448,15 @@ func getHttpString(url string) (responseString string) {
 	return
 }
 
-func getRotatorStatus(context *AppContext) (deg int) {
+func getRotatorStatus(context *AppContext, addressOrIp string) (deg int) {
 	deg = 1000
-	powerOn := getHttpString("http://" + context.Rotor1216IP + "/rotatorcontrol/set/power/on")
+	powerOn := getHttpString("http://" + addressOrIp + "/rotatorcontrol/set/power/on")
 
 	if len(powerOn) == 0 {
 		fmt.Printf("power/on operation failed\n")
 	}
 
-	getResult := getHttpString("http://" + context.Rotor1216IP + "/rotatorcontrol/get")
+	getResult := getHttpString("http://" + addressOrIp + "/rotatorcontrol/get")
 
 	if len(getResult) == 0 {
 		fmt.Printf("/rotatorcontrol/get operation failed\n")
@@ -391,10 +477,10 @@ func getRotatorStatus(context *AppContext) (deg int) {
 	return
 }
 
-func draw(from int, to int) *image.RGBA {
+func draw(context *AppContext, png string, from int, to int) *image.RGBA {
 
 	dest := image.NewRGBA(image.Rect(0, 0, 600, 600))
-	source, _ := draw2dimg.LoadFromPngFile("/flexi/locator.png")
+	source, _ := draw2dimg.LoadFromPngFile(context.AssetDir + "/" + png)
 	gc := draw2dimg.NewGraphicContext(dest)
 	gc.DrawImage(source)
 
