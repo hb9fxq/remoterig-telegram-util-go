@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/krippendorf/flex6k-discovery-util-go/flex"
 	"github.com/llgcode/draw2d/draw2dimg"
@@ -17,6 +18,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,20 +26,22 @@ import (
 )
 
 type AppContext struct {
-	AssetDir			string
+	AssetDir            string
 	TelegramToken       string
 	TelegramChat        int64
 	TelegramBot         *tgbotapi.BotAPI
 	Rotor1216IP         string
-	LoopRotor1216IP         string
+	LoopRotor1216IP     string
 	Webswitch1216IP     string
 	discoveryPackage    flex.DiscoveryPackage
 	rotationInProgress  bool
 	rabbitConnStr       string
 	lastFlexStatus      time.Time
 	lastFlexStateString string
-	antrawlist	string
+	antrawlist          string
+	mqttbroker          string
 	sync.Mutex
+	mqttClient mqtt.Client
 }
 
 type ListenerRegistration struct {
@@ -62,7 +66,28 @@ func main() {
 	flag.StringVar(&context.Webswitch1216IP, "WEBSWITCH1216", NDEF_STRING, "IP address of the 1216H Switch")
 	flag.StringVar(&context.rabbitConnStr, "RABBITCONN", NDEF_STRING, "Rabbitmq connection string")
 	flag.StringVar(&context.antrawlist, "ANTLIST", NDEF_STRING, "AntennaList")
+	flag.StringVar(&context.mqttbroker, "MQTTBROKER", NDEF_STRING, "MQTT Broker conn str.")
 	flag.Parse()
+
+	var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
+		var msgu = tgbotapi.NewMessage(context.TelegramChat, fmt.Sprintf("Antenna switched to %s", msg.Payload()))
+		context.TelegramBot.Send(msgu)
+	}
+
+	opts := mqtt.NewClientOptions().AddBroker(context.mqttbroker).SetClientID("telegram_bot")
+	opts.SetKeepAlive(2 * time.Second)
+	opts.SetDefaultPublishHandler(f)
+	opts.SetPingTimeout(1 * time.Second)
+
+	context.mqttClient = mqtt.NewClient(opts)
+	if token := context.mqttClient.Connect(); token.Wait() && token.Error() != nil {
+		panic(token.Error())
+	}
+
+	if token := context.mqttClient.Subscribe("ant/res", 0, nil); token.Wait() && token.Error() != nil {
+		fmt.Println(token.Error())
+		os.Exit(1)
+	}
 
 	context.lastFlexStateString = "Available"
 
@@ -181,18 +206,24 @@ func handleFlexStateChange(context *AppContext) {
 	if len(context.lastFlexStateString) > 1 {
 
 		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/on/1")
-
+		setAntenna("1a", context)
 		msg := tgbotapi.NewMessage(context.TelegramChat, "FLEX V3 ACTIVE (Kiwi disabled) current IP(s) connected: "+context.lastFlexStateString)
 		context.TelegramBot.Send(msg)
 		log.Print("Switch: KIWI OFF, FLEX ON")
 
 	} else {
 		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/off/1")
+		setAntenna("2a", context)
 		msg := tgbotapi.NewMessage(context.TelegramChat, "PUBLIC KIWI IS ACTIVE, no user is connected to FLEX V3 at this moment")
 		context.TelegramBot.Send(msg)
 		log.Print("Switch: KIWI ON, FLEX OFF")
 
 	}
+}
+
+func setAntenna(antStr string, context *AppContext) {
+	token := context.mqttClient.Publish("ant/cmd", 0, false, antStr)
+	token.Wait()
 }
 
 func failOnError(err error, msg string) {
@@ -248,7 +279,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 
 		if stateDegree >= 0 && stateDegree < 360 {
 			buf := new(bytes.Buffer)
-			jpeg.Encode(buf, draw(context, "locator_opti.png",stateDegree, -1), nil)
+			jpeg.Encode(buf, draw(context, "locator_opti.png", stateDegree, -1), nil)
 			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
 
 			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
@@ -262,10 +293,24 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 		}
 	}
 
+	if strings.HasPrefix(update.Message.Text, "/setant") {
+
+		tokens := strings.Split(update.Message.Text, " ")
+
+		if len(tokens) != 2 {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("That is an invalid command"))
+			msg.ReplyToMessageID = update.Message.MessageID
+			context.TelegramBot.Send(msg)
+			return
+		}
+
+		setAntenna(tokens[1], context)
+	}
+
 	if strings.HasPrefix(update.Message.Text, "/getant") {
 
 		//TODO: get connected antenna
-		antConnMessage := "\r\n\r\nConnected: 1: NotImplemented :-)"
+		antConnMessage := "\r\n\r\n A = Flex, B = KIWI & SDRs Splitter\r\n\r\n e.g. Flext to ant1 = '/setant 1A'"
 
 		res := strings.ReplaceAll(context.antrawlist, ";", "\r\n")
 		res += antConnMessage
@@ -279,7 +324,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 
 		if stateDegree >= 0 && stateDegree < 360 {
 			buf := new(bytes.Buffer)
-			jpeg.Encode(buf, draw(context, "locator_loop.png",stateDegree, -1), nil)
+			jpeg.Encode(buf, draw(context, "locator_loop.png", stateDegree, -1), nil)
 			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
 
 			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
@@ -337,7 +382,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 			context.TelegramBot.Send(msg)
 		}
 
-		go rotateAndNotify(update, context.Rotor1216IP,"locator_opti.png", context, stateInt)
+		go rotateAndNotify(update, context.Rotor1216IP, "locator_opti.png", context, stateInt)
 	}
 
 	if strings.HasPrefix(update.Message.Text, "/setloop") {
@@ -384,7 +429,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 			context.TelegramBot.Send(msg)
 		}
 
-		go rotateAndNotify(update, context.LoopRotor1216IP, "locator_loop.png",context, stateInt)
+		go rotateAndNotify(update, context.LoopRotor1216IP, "locator_loop.png", context, stateInt)
 	}
 
 }
@@ -407,7 +452,7 @@ func rotateAndNotify(update *tgbotapi.Update, addressOrIp string, png string, co
 		if getRotatorStatus(context, addressOrIp) == i {
 
 			buf := new(bytes.Buffer)
-			jpeg.Encode(buf, draw(context,png , i, -1), nil)
+			jpeg.Encode(buf, draw(context, png, i, -1), nil)
 			b := tgbotapi.FileBytes{Name: "rotor.jpg", Bytes: buf.Bytes()}
 
 			msgImage := tgbotapi.NewPhotoUpload(update.Message.Chat.ID, b)
