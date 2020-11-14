@@ -70,8 +70,13 @@ func main() {
 	flag.Parse()
 
 	var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
-		var msgu = tgbotapi.NewMessage(context.TelegramChat, fmt.Sprintf("Antenna switched to %s", msg.Payload()))
-		context.TelegramBot.Send(msgu)
+
+		mRaw := fmt.Sprintf("%s", msg.Payload())
+		tokens := strings.Split(mRaw, " ")
+
+		msgImage := tgbotapi.NewPhotoUpload(context.TelegramChat, context.AssetDir+"/ANT"+tokens[0]+".png")
+		msgImage.Caption = fmt.Sprintf("Antenna switched to %s", mRaw)
+		context.TelegramBot.Send(msgImage)
 	}
 
 	opts := mqtt.NewClientOptions().AddBroker(context.mqttbroker).SetClientID("telegram_bot")
@@ -213,7 +218,7 @@ func handleFlexStateChange(context *AppContext) {
 
 	} else {
 		go getHttpString("http://" + context.Webswitch1216IP + "/relaycontrol/off/1")
-		setAntenna("2a", context)
+		setAntenna("1b", context)
 		msg := tgbotapi.NewMessage(context.TelegramChat, "PUBLIC KIWI IS ACTIVE, no user is connected to FLEX V3 at this moment")
 		context.TelegramBot.Send(msg)
 		log.Print("Switch: KIWI ON, FLEX OFF")
