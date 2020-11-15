@@ -75,7 +75,7 @@ func main() {
 		tokens := strings.Split(mRaw, " ")
 
 		msgImage := tgbotapi.NewPhotoUpload(context.TelegramChat, context.AssetDir+"/ANT"+tokens[0]+".png")
-		msgImage.Caption = fmt.Sprintf("Antenna switched to %s", mRaw)
+		msgImage.Caption = fmt.Sprintf("Antenna patched to path: %s", mRaw)
 		context.TelegramBot.Send(msgImage)
 	}
 
@@ -322,6 +322,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, res)
 		msg.ReplyToMessageID = update.Message.MessageID
 		context.TelegramBot.Send(msg)
+		setAntenna("R", context)
 	}
 
 	if strings.HasPrefix(update.Message.Text, "/loopstatus") {
