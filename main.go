@@ -9,7 +9,6 @@ import (
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/krippendorf/flex6k-discovery-util-go/flex"
 	"github.com/llgcode/draw2d/draw2dimg"
-	"github.com/streadway/amqp"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -35,20 +34,13 @@ type AppContext struct {
 	Webswitch1216IP     string
 	discoveryPackage    flex.DiscoveryPackage
 	rotationInProgress  bool
-	rabbitConnStr       string
 	lastFlexStatus      time.Time
 	lastFlexStateString string
 	antrawlist          string
 	mqttbroker          string
+	mqttClientId        string
 	sync.Mutex
 	mqttClient mqtt.Client
-}
-
-type ListenerRegistration struct {
-	listenerPort int
-	listenerIp   string
-	raw          string
-	since        int64
 }
 
 const NDEF_STRING string = "NDEF"
@@ -64,25 +56,40 @@ func main() {
 	flag.StringVar(&context.Rotor1216IP, "ROTOR1216", NDEF_STRING, "IP address of the 1216H Rotor Controller")
 	flag.StringVar(&context.LoopRotor1216IP, "LOOPROTOR1216", NDEF_STRING, "IP address of the 1216H Rotor Controller")
 	flag.StringVar(&context.Webswitch1216IP, "WEBSWITCH1216", NDEF_STRING, "IP address of the 1216H Switch")
-	flag.StringVar(&context.rabbitConnStr, "RABBITCONN", NDEF_STRING, "Rabbitmq connection string")
 	flag.StringVar(&context.antrawlist, "ANTLIST", NDEF_STRING, "AntennaList")
 	flag.StringVar(&context.mqttbroker, "MQTTBROKER", NDEF_STRING, "MQTT Broker conn str.")
+	flag.StringVar(&context.mqttClientId, "MQTTCLIENTID", NDEF_STRING, "MQTT Broker conn str.")
 	flag.Parse()
 
 	var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
 
 		mRaw := fmt.Sprintf("%s", msg.Payload())
-		tokens := strings.Split(mRaw, " ")
 
-		msgImage := tgbotapi.NewPhotoUpload(context.TelegramChat, context.AssetDir+"/ANT"+tokens[0]+".png")
-		msgImage.Caption = fmt.Sprintf("Antenna patched to path: %s", mRaw)
-		context.TelegramBot.Send(msgImage)
+		if msg.Topic() == "flex/state" {
+			context.lastFlexStatus = time.Now()
+			dec := json.NewDecoder(strings.NewReader(string(mRaw)))
+			dec.Decode(&context.discoveryPackage)
+
+			if context.lastFlexStateString != strings.ToUpper(context.discoveryPackage.Inuse_ip) {
+				context.lastFlexStateString = strings.ToUpper(context.discoveryPackage.Inuse_ip)
+				handleFlexStateChange(context)
+			}
+		}
+
+		if msg.Topic() == "ant/res" {
+			tokens := strings.Split(mRaw, " ")
+			msgImage := tgbotapi.NewPhotoUpload(context.TelegramChat, context.AssetDir+"/ANT"+tokens[0]+".png")
+			msgImage.Caption = fmt.Sprintf("Antenna patched to path: %s", mRaw)
+			context.TelegramBot.Send(msgImage)
+		}
+
 	}
 
 	opts := mqtt.NewClientOptions().AddBroker(context.mqttbroker).SetClientID("telegram_bot")
 	opts.SetKeepAlive(2 * time.Second)
 	opts.SetDefaultPublishHandler(f)
 	opts.SetPingTimeout(1 * time.Second)
+	opts.SetCleanSession(false)
 
 	context.mqttClient = mqtt.NewClient(opts)
 	if token := context.mqttClient.Connect(); token.Wait() && token.Error() != nil {
@@ -94,11 +101,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	context.lastFlexStateString = "Available"
-
-	if len(context.rabbitConnStr) > 0 {
-		go consumeFlexRabbit(context)
+	if token := context.mqttClient.Subscribe("flex/state", 0, nil); token.Wait() && token.Error() != nil {
+		fmt.Println(token.Error())
+		os.Exit(1)
 	}
+
+	context.lastFlexStateString = "Available"
 
 	chatIdInt, err := strconv.ParseInt(chatIdString, 10, 64)
 	if err != nil {
@@ -133,78 +141,6 @@ func main() {
 
 }
 
-func consumeFlexRabbit(context *AppContext) {
-	conn, err := amqp.Dial(context.rabbitConnStr)
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
-
-	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
-
-	err = ch.ExchangeDeclare(
-		"flex_topic", // name
-		"topic",      // type
-		true,         // durable
-		false,        // auto-deleted
-		false,        // internal
-		false,        // no-wait
-		nil,          // arguments
-	)
-	failOnError(err, "Failed to declare an exchange")
-
-	q, err := ch.QueueDeclare(
-		"",    // name
-		false, // durable
-		false, // delete when usused
-		true,  // exclusive
-		false, // no-wait
-		nil,   // arguments
-	)
-	failOnError(err, "Failed to declare a queue")
-
-	for _, s := range "#" {
-		log.Printf("Binding queue %s to exchange %s with routing key %s",
-			q.Name, "flex_topic", s)
-		err = ch.QueueBind(
-			q.Name,       // queue name
-			"#",          // routing key
-			"flex_topic", // exchange
-			false,
-			nil)
-		failOnError(err, "Failed to bind a queue")
-	}
-
-	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		true,   // auto ack
-		false,  // exclusive
-		false,  // no local
-		false,  // no wait
-		nil,    // args
-	)
-	failOnError(err, "Failed to register a consumer")
-
-	forever := make(chan bool)
-
-	go func() {
-		for d := range msgs {
-			context.lastFlexStatus = time.Now()
-			dec := json.NewDecoder(strings.NewReader(string(d.Body[:])))
-			dec.Decode(&context.discoveryPackage)
-
-			if context.lastFlexStateString != strings.ToUpper(context.discoveryPackage.Inuse_ip) {
-				context.lastFlexStateString = strings.ToUpper(context.discoveryPackage.Inuse_ip)
-				handleFlexStateChange(context)
-			}
-
-		}
-	}()
-
-	<-forever
-}
-
 func handleFlexStateChange(context *AppContext) {
 	time.Sleep(time.Second * 3)
 
@@ -229,13 +165,6 @@ func handleFlexStateChange(context *AppContext) {
 func setAntenna(antStr string, context *AppContext) {
 	token := context.mqttClient.Publish("ant/cmd", 0, false, antStr)
 	token.Wait()
-}
-
-func failOnError(err error, msg string) {
-	if err != nil {
-		log.Fatalf("%s: %s", msg, err)
-		panic(fmt.Sprintf("%s: %s", msg, err))
-	}
 }
 
 func handleUpdate(update *tgbotapi.Update, context *AppContext) {
@@ -314,7 +243,6 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 
 	if strings.HasPrefix(update.Message.Text, "/getant") {
 
-		//TODO: get connected antenna
 		antConnMessage := "\r\n\r\n A = Flex, B = KIWI & SDRs Splitter\r\n\r\n e.g. Flext to ant1 = '/setant 1A'"
 
 		res := strings.ReplaceAll(context.antrawlist, ";", "\r\n")
@@ -322,7 +250,7 @@ func handleUpdate(update *tgbotapi.Update, context *AppContext) {
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, res)
 		msg.ReplyToMessageID = update.Message.MessageID
 		context.TelegramBot.Send(msg)
-		setAntenna("R", context)
+		setAntenna("R", context) //trigger read-ant event
 	}
 
 	if strings.HasPrefix(update.Message.Text, "/loopstatus") {
